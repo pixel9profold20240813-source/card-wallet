@@ -2526,6 +2526,44 @@ var qrcode = function() {
     opacity:0; pointer-events:none; transition: all .25s; z-index: 200;
   }
   .toast.show{ opacity:1; transform: translateX(-50%) translateY(0); }
+
+  .slot-badge{
+    position:absolute; top:14px; left:24px;
+    background: var(--felt); color: var(--paper);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px; letter-spacing: 1px;
+    padding: 3px 7px; border-radius: 5px;
+    z-index: 6;
+  }
+
+  /* Fullscreen quick view — opened from an installed App Shortcut */
+  .quick-view{
+    display:none;
+    position:fixed; inset:0; z-index: 300;
+    background: var(--white);
+    flex-direction:column; align-items:center; justify-content:center;
+    padding: env(safe-area-inset-top) 24px calc(24px + env(safe-area-inset-bottom));
+  }
+  .quick-view.show{ display:flex; }
+  .quick-close{
+    position:absolute; top: calc(18px + env(safe-area-inset-top)); right:18px;
+    width:38px; height:38px; border-radius:50%; border:none;
+    background: rgba(42,33,25,0.08); color: var(--ink-soft);
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .quick-body{ width:100%; max-width:360px; text-align:center; }
+  .quick-body .qname{
+    font-family: 'Roboto Slab', Georgia, serif; font-weight:700;
+    font-size: 22px; color: var(--ink); margin: 0 0 4px;
+  }
+  .quick-body .qmeta{
+    font-family: 'IBM Plex Mono', monospace; font-size:11px;
+    letter-spacing:1.5px; text-transform:uppercase; color: var(--ink-soft); margin: 0 0 22px;
+  }
+  .quick-code{ display:flex; flex-direction:column; align-items:center; gap:10px; }
+  .quick-code svg{ width:100%; max-width:320px; height:auto; }
+  .quick-code .code-text{ font-size:15px; letter-spacing:2px; }
+  .quick-empty{ color: var(--ink-soft); font-size:14px; line-height:1.7; }
 </style>
 </head>
 <body>
@@ -2584,6 +2622,17 @@ var qrcode = function() {
     </div>
 
     <div class="field">
+      <label>主畫面快捷（長按 App 圖示）</label>
+      <div class="seg">
+        <button type="button" data-slot="0" id="slot0">不指定</button>
+        <button type="button" data-slot="1" id="slot1">快捷 1</button>
+        <button type="button" data-slot="2" id="slot2">快捷 2</button>
+        <button type="button" data-slot="3" id="slot3">快捷 3</button>
+      </div>
+      <p class="hint" id="slotHint">指定後，長按主畫面 App 圖示即可直接跳到此卡的全螢幕條碼</p>
+    </div>
+
+    <div class="field">
       <label>備註（選填）</label>
       <textarea id="fNote" rows="2" placeholder="例如：結帳時先出示載具再付款"></textarea>
     </div>
@@ -2606,6 +2655,14 @@ var qrcode = function() {
   </div>
 </div>
 
+<!-- Fullscreen quick-view (opened via App shortcut / ?slot=N) -->
+<div id="quickView" class="quick-view">
+  <button class="quick-close" id="quickClose" aria-label="關閉">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </button>
+  <div class="quick-body" id="quickBody"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -2625,6 +2682,7 @@ var qrcode = function() {
   let deletingId = null;
   let pendingFmt = 'auto';
   let pendingColor = COLORS[0].v;
+  let pendingSlot = 0;
 
   const $ = (id) => document.getElementById(id);
   const stage = $('stage');
@@ -2656,15 +2714,15 @@ var qrcode = function() {
 
   async function loadCards(){
     try{
-      const res = await window.storage.get('cards', false);
-      cards = res && res.value ? JSON.parse(res.value) : [];
+      const raw = localStorage.getItem('cardwallet:cards');
+      cards = raw ? JSON.parse(raw) : [];
     }catch(e){ cards = []; }
     if(cards.length && !activeId) activeId = cards[0].id;
     render();
   }
 
   async function persist(){
-    try{ await window.storage.set('cards', JSON.stringify(cards), false); }
+    try{ localStorage.setItem('cardwallet:cards', JSON.stringify(cards)); }
     catch(e){ toast('儲存失敗，請重試'); }
   }
 
@@ -2733,6 +2791,7 @@ var qrcode = function() {
     front.style.transform = 'translateX(-50%) translateY(0) scale(1)';
     front.innerHTML = `
       <div class="tab" style="background:${active.color}"></div>
+      ${active.slot ? `<div class="slot-badge">快捷 ${active.slot}</div>` : ''}
       <div class="card-actions">
         <button class="icon-btn" data-act="edit" title="編輯">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -2856,6 +2915,17 @@ var qrcode = function() {
   $('fmtQr').addEventListener('click', ()=> setFmt('qr'));
   $('fCode').addEventListener('input', updateAutoHint);
 
+  function setSlot(slot){
+    pendingSlot = slot;
+    [0,1,2,3].forEach(n => $('slot'+n).classList.toggle('active', n===slot));
+    if(slot === 0){ $('slotHint').textContent = '指定後，長按主畫面 App 圖示即可直接跳到此卡的全螢幕條碼'; return; }
+    const taken = cards.find(c => c.slot === slot && c.id !== editingId);
+    $('slotHint').textContent = taken
+      ? `快捷 ${slot} 目前是「${taken.name}」，儲存後將改為這張卡片`
+      : `快捷 ${slot} 目前未指定，儲存後長按圖示即可快速顯示`;
+  }
+  [0,1,2,3].forEach(n => $('slot'+n).addEventListener('click', ()=> setSlot(n)));
+
   function openForm(id){
     editingId = id || null;
     $('nameErr').style.display='none';
@@ -2868,6 +2938,7 @@ var qrcode = function() {
       $('fNote').value = c.note || '';
       pendingFmt = c.format;
       pendingColor = c.color;
+      pendingSlot = c.slot || 0;
     } else {
       $('formTitle').textContent = '新增卡片';
       $('fName').value = '';
@@ -2875,8 +2946,10 @@ var qrcode = function() {
       $('fNote').value = '';
       pendingFmt = 'auto';
       pendingColor = COLORS[0].v;
+      pendingSlot = 0;
     }
     setFmt(pendingFmt);
+    setSlot(pendingSlot);
     buildSwatches();
     formOverlay.classList.add('show');
   }
@@ -2894,12 +2967,17 @@ var qrcode = function() {
     if(!ok) return;
     const note = $('fNote').value.trim();
 
+    // Only one card may hold a given quick-access slot at a time.
+    if(pendingSlot !== 0){
+      cards.forEach(c => { if(c.slot === pendingSlot && c.id !== editingId) c.slot = 0; });
+    }
+
     if(editingId){
       const c = cards.find(x => x.id === editingId);
-      c.name = name; c.code = code; c.note = note; c.format = pendingFmt; c.color = pendingColor;
+      c.name = name; c.code = code; c.note = note; c.format = pendingFmt; c.color = pendingColor; c.slot = pendingSlot;
       toast('已更新卡片');
     } else {
-      const nc = { id: uid(), name, code, note, format: pendingFmt, color: pendingColor };
+      const nc = { id: uid(), name, code, note, format: pendingFmt, color: pendingColor, slot: pendingSlot };
       cards.unshift(nc);
       activeId = nc.id;
       toast('已新增卡片');
@@ -2925,7 +3003,44 @@ var qrcode = function() {
 
   $('searchInput').addEventListener('input', render);
 
+  // ===== Quick view: opened directly from an installed App Shortcut =====
+  // Android PWAs support static "shortcuts" in the manifest (long-press the
+  // home screen icon). Each shortcut links to ?slot=N; whichever card the
+  // user assigned to that slot is shown full-screen for fast scanning.
+  function tryQuickView(){
+    const params = new URLSearchParams(location.search);
+    const slot = parseInt(params.get('slot'), 10);
+    if(!slot) return false;
+
+    let raw = [];
+    try{ raw = JSON.parse(localStorage.getItem('cardwallet:cards') || '[]'); }catch(e){}
+    const card = raw.find(c => c.slot === slot);
+
+    const body = $('quickBody');
+    if(card){
+      const fmt = resolvedFormat(card);
+      body.innerHTML = `
+        <p class="qname">${escapeHtml(card.name)}</p>
+        <p class="qmeta">快捷 ${slot} · ${formatLabel(fmt)}</p>
+        <div class="quick-code" id="quickCode"></div>
+      `;
+      renderCode($('quickCode'), card.code, fmt);
+    } else {
+      body.innerHTML = `
+        <p class="qname">尚未指定快捷 ${slot}</p>
+        <p class="quick-empty">回到卡夾，編輯任一張卡片並在「主畫面快捷」選擇「快捷 ${slot}」即可。</p>
+      `;
+    }
+    $('quickView').classList.add('show');
+    return true;
+  }
+  $('quickClose').addEventListener('click', () => {
+    $('quickView').classList.remove('show');
+    history.replaceState(null, '', location.pathname);
+  });
+
   loadCards();
+  tryQuickView();
 
   if('serviceWorker' in navigator){
     window.addEventListener('load', () => {

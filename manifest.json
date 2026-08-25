@@ -28,5 +28,28 @@
       "type": "image/png",
       "purpose": "maskable"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "快捷條碼 1",
+      "short_name": "快捷 1",
+      "description": "直接顯示指定為快捷 1 的卡片條碼",
+      "url": "./index.html?slot=1",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "快捷條碼 2",
+      "short_name": "快捷 2",
+      "description": "直接顯示指定為快捷 2 的卡片條碼",
+      "url": "./index.html?slot=2",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "快捷條碼 3",
+      "short_name": "快捷 3",
+      "description": "直接顯示指定為快捷 3 的卡片條碼",
+      "url": "./index.html?slot=3",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
   ]
 }
