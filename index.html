@@ -3116,7 +3116,9 @@ var qrcode = function() {
   }
   $('quickClose').addEventListener('click', () => {
     $('quickView').classList.remove('show');
-    history.replaceState(null, '', location.pathname);
+    // In some sandboxed preview contexts (e.g. a srcdoc iframe), history APIs are
+    // blocked entirely — that's fine to skip, it only tidies the URL on real deployments.
+    try{ history.replaceState(null, '', location.pathname); }catch(e){}
   });
 
   loadCards();
