@@ -2397,7 +2397,7 @@ var qrcode = function() {
     position:absolute; left:50%; top:6px; width: 92%; max-width: 340px;
     border-radius: 14px; background: var(--paper); color: var(--ink);
     box-shadow: 0 14px 30px rgba(0,0,0,0.35);
-    transition: transform .38s cubic-bezier(.22,.9,.3,1), box-shadow .3s, opacity .3s;
+    transition: transform .5s cubic-bezier(.34,1.42,.32,1), box-shadow .3s, opacity .4s ease;
     cursor:pointer; overflow:hidden;
   }
   .card .tab{ position:absolute; top:0; left:0; width: 10px; height:100%; }
@@ -2790,35 +2790,41 @@ var qrcode = function() {
       if(!visibleIds.has(id)){ el.remove(); cardEls.delete(id); }
     });
 
-    // fanned stack, back-to-front so later (closer) cards sit on top visually
-    const fanAngles = [5, -6, 4];
+    // fanned stack, back-to-front so later (closer) cards sit on top visually.
+    // Spread is deliberately generous so the "slide to front" motion reads clearly.
+    const fanAngles = [10, -11, 9];
     for(let i = others.length - 1; i >= 0; i--){
       const c = others[i];
       const depth = i + 1;
       let el = cardEls.get(c.id);
+      let isNewEl = false;
       if(!el){
         el = document.createElement('div');
         stage.appendChild(el);
         cardEls.set(c.id, el);
+        isNewEl = true;
       }
       el.className = 'card card-behind';
       el.style.zIndex = 10 + (others.length - i);
       const angle = fanAngles[i % fanAngles.length];
-      el.style.transform = `translateX(-50%) translateY(${depth*10}px) scale(${1 - depth*0.045}) rotate(${angle}deg)`;
-      el.style.opacity = 0.88 - depth*0.14;
+      el.style.transform = `translateX(-50%) translateY(${depth*20}px) scale(${1 - depth*0.075}) rotate(${angle}deg)`;
+      el.style.opacity = 0.85 - depth*0.2;
       el.innerHTML = `<div class="tab" style="background:${c.color}"></div>
         <div class="card-body">
           <p class="card-name" style="font-size:16px;">${escapeHtml(c.name)}</p>
           <p class="peek-label">輕點以切換到最上面</p>
         </div>`;
       el.onclick = () => { activeId = c.id; render(); };
+      fadeInBody(el, isNewEl);
     }
 
     const fmt = resolvedFormat(active);
     let front = cardEls.get(active.id);
+    let isNewFront = false;
     if(!front){
       front = document.createElement('div');
       cardEls.set(active.id, front);
+      isNewFront = true;
     }
     front.className = 'card card-front';
     front.style.zIndex = 50;
@@ -2856,6 +2862,24 @@ var qrcode = function() {
 
     front.querySelector('[data-act="edit"]').addEventListener('click', (e)=>{ e.stopPropagation(); openForm(active.id); });
     front.querySelector('[data-act="del"]').addEventListener('click', (e)=>{ e.stopPropagation(); openDelete(active.id); });
+    fadeInBody(front, isNewFront);
+  }
+
+  // Content inside a reused card node swaps instantly (different card's text/buttons),
+  // which reads as a "jump" even while the outer position animates smoothly. Fading the
+  // body in softens that swap so the whole transition feels continuous.
+  function fadeInBody(el, skipFade){
+    const body = el.querySelector('.card-body');
+    if(!body) return;
+    if(skipFade){ body.style.transition = 'none'; body.style.opacity = '1'; return; }
+    body.style.transition = 'none';
+    body.style.opacity = '0';
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        body.style.transition = 'opacity .38s ease .06s';
+        body.style.opacity = '1';
+      });
+    });
   }
 
   // Tap-to-zoom: reuse the same fullscreen white view used by App Shortcuts,
