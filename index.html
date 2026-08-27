@@ -2402,7 +2402,7 @@ var qrcode = function() {
   }
   .card .tab{ position:absolute; top:0; left:0; width: 10px; height:100%; }
   .card-body{ padding: 16px 18px 16px 26px; }
-  .card-behind{ height: 230px; pointer-events:none; }
+  .card-behind{ height: 230px; transform-origin: top center; }
   .card-behind .card-body{ padding-top:14px; }
   .card-behind .peek-label{
     font-family: 'IBM Plex Mono', monospace;
@@ -2423,6 +2423,14 @@ var qrcode = function() {
     background: var(--white); border-radius: 10px; padding: 14px 10px 10px;
     display:flex; flex-direction:column; align-items:center; gap:6px;
     border: 1px solid rgba(0,0,0,0.06); min-height: 96px; justify-content:center;
+    position: relative; cursor: zoom-in;
+  }
+  .zoom-hint{
+    position:absolute; bottom:8px; right:10px;
+    display:flex; align-items:center; gap:3px;
+    font-family: 'IBM Plex Mono', monospace; font-size:9.5px;
+    letter-spacing:0.5px; color: rgba(42,33,25,0.35);
+    pointer-events:none;
   }
   .code-stage svg{ width:100%; height:auto; max-height:78px; }
   .qr-box{ padding: 4px; line-height:0; }
@@ -2678,6 +2686,7 @@ var qrcode = function() {
 
   let cards = [];
   let activeId = null;
+  let cardEls = new Map(); // card id -> persisted DOM node, so CSS transitions animate on reorder
   let editingId = null;
   let deletingId = null;
   let pendingFmt = 'auto';
@@ -2754,9 +2763,10 @@ var qrcode = function() {
   }
 
   function renderStage(){
-    stage.innerHTML = '';
     const list = filteredCards();
     if(list.length === 0){
+      cardEls.forEach(el => el.remove());
+      cardEls.clear();
       stage.style.height = 'auto';
       stage.innerHTML = `<div class="empty-state">
           <p class="stamp">— 抽屜是空的 —</p>
@@ -2764,31 +2774,55 @@ var qrcode = function() {
         </div>`;
       return;
     }
+    const emptyEl = stage.querySelector('.empty-state');
+    if(emptyEl) emptyEl.remove();
     stage.style.height = '300px';
+
     let active = list.find(c => c.id === activeId) || list[0];
     activeId = active.id;
     const others = list.filter(c => c.id !== active.id).slice(0, 3);
+    const visibleIds = new Set([active.id, ...others.map(c => c.id)]);
 
-    others.forEach((c, i) => {
-      const depth = others.length - i;
-      const el = document.createElement('div');
+    // drop nodes for cards no longer shown (deleted, filtered out, or pushed past depth 3)
+    cardEls.forEach((el, id) => {
+      if(!visibleIds.has(id)){ el.remove(); cardEls.delete(id); }
+    });
+
+    // fanned stack, back-to-front so later (closer) cards sit on top visually
+    const fanAngles = [5, -6, 4];
+    for(let i = others.length - 1; i >= 0; i--){
+      const c = others[i];
+      const depth = i + 1;
+      let el = cardEls.get(c.id);
+      if(!el){
+        el = document.createElement('div');
+        stage.appendChild(el);
+        cardEls.set(c.id, el);
+      }
       el.className = 'card card-behind';
-      el.style.zIndex = 10 + i;
-      el.style.transform = `translateX(-50%) translateY(${depth*8}px) scale(${1 - depth*0.035})`;
-      el.style.opacity = 0.75 - depth*0.12;
+      el.style.zIndex = 10 + (others.length - i);
+      const angle = fanAngles[i % fanAngles.length];
+      el.style.transform = `translateX(-50%) translateY(${depth*10}px) scale(${1 - depth*0.045}) rotate(${angle}deg)`;
+      el.style.opacity = 0.88 - depth*0.14;
       el.innerHTML = `<div class="tab" style="background:${c.color}"></div>
         <div class="card-body">
           <p class="card-name" style="font-size:16px;">${escapeHtml(c.name)}</p>
-          <p class="peek-label">輕點下方全部卡片可切換</p>
+          <p class="peek-label">輕點以切換到最上面</p>
         </div>`;
-      el.addEventListener('click', () => { activeId = c.id; render(); });
-      stage.appendChild(el);
-    });
+      el.onclick = () => { activeId = c.id; render(); };
+    }
 
     const fmt = resolvedFormat(active);
-    const front = document.createElement('div');
+    let front = cardEls.get(active.id);
+    if(!front){
+      front = document.createElement('div');
+      cardEls.set(active.id, front);
+    }
     front.className = 'card card-front';
-    front.style.transform = 'translateX(-50%) translateY(0) scale(1)';
+    front.style.zIndex = 50;
+    front.style.opacity = 1;
+    front.style.transform = 'translateX(-50%) translateY(0) scale(1) rotate(0deg)';
+    front.onclick = null;
     front.innerHTML = `
       <div class="tab" style="background:${active.color}"></div>
       ${active.slot ? `<div class="slot-badge">快捷 ${active.slot}</div>` : ''}
@@ -2807,13 +2841,33 @@ var qrcode = function() {
         ${active.note ? `<p class="card-note">${escapeHtml(active.note)}</p>` : ''}
       </div>
     `;
+    // re-append last so it's on top of DOM order too (stacking-context safety)
     stage.appendChild(front);
 
     const codeStage = front.querySelector('#codeStage');
     renderCode(codeStage, active.code, fmt);
+    const hint = document.createElement('div');
+    hint.className = 'zoom-hint';
+    hint.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 放大`;
+    codeStage.appendChild(hint);
+    codeStage.addEventListener('click', (e) => { e.stopPropagation(); openZoom(active); });
 
     front.querySelector('[data-act="edit"]').addEventListener('click', (e)=>{ e.stopPropagation(); openForm(active.id); });
     front.querySelector('[data-act="del"]').addEventListener('click', (e)=>{ e.stopPropagation(); openDelete(active.id); });
+  }
+
+  // Tap-to-zoom: reuse the same fullscreen white view used by App Shortcuts,
+  // since a large, high-contrast barcode is exactly what's needed at checkout.
+  function openZoom(card){
+    const fmt = resolvedFormat(card);
+    const body = $('quickBody');
+    body.innerHTML = `
+      <p class="qname">${escapeHtml(card.name)}</p>
+      <p class="qmeta">${formatLabel(fmt)}${card.format === 'auto' ? ' · 自動' : ''}</p>
+      <div class="quick-code" id="quickCode"></div>
+    `;
+    renderCode($('quickCode'), card.code, fmt);
+    $('quickView').classList.add('show');
   }
 
   function renderCode(container, code, fmt){
