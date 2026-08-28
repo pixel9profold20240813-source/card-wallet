@@ -3041,24 +3041,83 @@ var qrcode = function() {
     el.textContent = msg;
     el.className = 'hint' + (kind ? ' ' + kind : '');
   }
-  function decodeImageFile(file){
+
+  // Splits the image into overlapping regions, ordered center-out (people tend to
+  // roughly center the subject). A screenshot's barcode already fills the frame and
+  // gets caught by the whole-image passes; a phone photo often shows the whole card
+  // from a distance, so the barcode itself is a small part of a huge frame — tiling
+  // lets each region be decoded at effectively higher zoom.
+  function computeTiles(w, h, cols, rows, overlap){
+    const tw = w / (cols - (cols-1)*overlap);
+    const th = h / (rows - (rows-1)*overlap);
+    const tiles = [];
+    for(let ry = 0; ry < rows; ry++){
+      for(let rx = 0; rx < cols; rx++){
+        const sx = rx * tw * (1-overlap), sy = ry * th * (1-overlap);
+        const sw = Math.min(tw, w - sx), sh = Math.min(th, h - sy);
+        const cx = sx + sw/2, cy = sy + sh/2;
+        tiles.push({ sx, sy, sw, sh, d: Math.hypot(cx - w/2, cy - h/2) });
+      }
+    }
+    tiles.sort((a, b) => a.d - b.d);
+    return tiles;
+  }
+
+  function decodeRegion(img, region, maxDim, tryHarder){
+    const canvas = $('scanCanvas');
+    const sx = region ? region.sx : 0, sy = region ? region.sy : 0;
+    const sw = region ? region.sw : img.width, sh = region ? region.sh : img.height;
+    const scale = Math.min(1, maxDim / Math.max(sw, sh));
+    canvas.width = Math.max(1, Math.round(sw * scale));
+    canvas.height = Math.max(1, Math.round(sh * scale));
+    canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+
+    const reader = getReader();
+    const hints = new Map();
+    if(tryHarder) hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    reader.setHints(hints);
+    return reader.decodeFromCanvas(canvas); // throws if nothing found in this region
+  }
+
+  const yieldToUI = () => new Promise(r => setTimeout(r, 0));
+
+  async function multiPassDecode(img){
+    // Pass 1 — fast whole-image pass, no extra effort. Catches the easy cases
+    // (screenshots, a barcode that already fills most of the frame) near-instantly.
+    try{ return decodeRegion(img, null, 1000, false); }catch(e){}
+    await yieldToUI();
+    setScanStatus('辨識中…（加強比對）');
+
+    // Pass 2 — whole image again at higher resolution with TRY_HARDER, for photos
+    // that are merely blurry/rotated/low-contrast but still reasonably large in frame.
+    try{ return decodeRegion(img, null, 1800, true); }catch(e){}
+    await yieldToUI();
+    setScanStatus('辨識中…（逐區域掃描）');
+
+    // Pass 3 — tile the ORIGINAL resolution into overlapping regions and try each,
+    // center-out. This is what rescues "whole card photographed from a distance".
+    const tiles = computeTiles(img.width, img.height, 3, 3, 0.15);
+    for(const t of tiles){
+      try{ return decodeRegion(img, t, 1400, true); }catch(e){}
+      await yieldToUI();
+    }
+    return null;
+  }
+
+  async function decodeImageFile(file){
     const camBtn = $('scanCameraBtn'), upBtn = $('scanUploadBtn');
     camBtn.classList.add('busy'); upBtn.classList.add('busy');
     setScanStatus('辨識中…');
 
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       try{
-        const canvas = $('scanCanvas');
-        // Downscale very large photos so decoding stays fast, ZXing doesn't need full resolution.
-        const maxDim = 1400;
-        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-
-        const result = getReader().decodeFromCanvas(canvas);
+        const result = await multiPassDecode(img);
+        if(!result){
+          setScanStatus('無法辨識條碼，請靠近拍攝、避免反光模糊，或手動輸入', 'bad');
+          return;
+        }
         const text = result.getText();
         const isQr = result.getBarcodeFormat() === ZXing.BarcodeFormat.QR_CODE;
 
@@ -3068,7 +3127,7 @@ var qrcode = function() {
         setScanStatus('已辨識：' + text, 'ok');
         toast('已自動填入卡號');
       }catch(e){
-        setScanStatus('無法辨識條碼，請確認照片清晰、避免反光或手動輸入', 'bad');
+        setScanStatus('無法辨識條碼，請靠近拍攝、避免反光模糊，或手動輸入', 'bad');
       }finally{
         camBtn.classList.remove('busy'); upBtn.classList.remove('busy');
         URL.revokeObjectURL(url);
