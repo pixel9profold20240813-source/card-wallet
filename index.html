@@ -3079,6 +3079,86 @@ var qrcode = function() {
     return reader.decodeFromCanvas(canvas); // throws if nothing found in this region
   }
 
+  // Bilinear-interpolated CLAHE (contrast-limited adaptive histogram equalization),
+  // run directly on canvas pixel data. A faded/low-ink barcode print photographed under
+  // ordinary lighting often has bars only slightly darker than the card itself — nowhere
+  // near black-on-white. A single global contrast adjustment can't fix that (the "dark"
+  // ink and the paper are still close in value across the whole photo), but equalizing
+  // within small local windows pulls apart whatever contrast exists in that neighborhood,
+  // and the bilinear blend between windows avoids hard seams across tile edges.
+  function claheEnhance(canvas, tilesX, tilesY, clipLimit){
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+    const gray = new Uint8ClampedArray(w * h);
+    for(let i = 0, p = 0; i < data.length; i += 4, p++){
+      gray[p] = (data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114) | 0;
+    }
+
+    const tileW = Math.ceil(w / tilesX), tileH = Math.ceil(h / tilesY);
+    const luts = [];
+    for(let ty = 0; ty < tilesY; ty++){
+      const row = [];
+      for(let tx = 0; tx < tilesX; tx++){
+        const x0 = tx*tileW, y0 = ty*tileH;
+        const x1 = Math.min(x0+tileW, w), y1 = Math.min(y0+tileH, h);
+        const hist = new Float64Array(256);
+        let n = 0;
+        for(let y = y0; y < y1; y++){
+          const off = y*w;
+          for(let x = x0; x < x1; x++){ hist[gray[off+x]]++; n++; }
+        }
+        const clip = Math.max((clipLimit*n)/256, 1);
+        let excess = 0;
+        for(let i = 0; i < 256; i++){ if(hist[i] > clip){ excess += hist[i]-clip; hist[i] = clip; } }
+        const redist = excess/256;
+        for(let i = 0; i < 256; i++) hist[i] += redist;
+        const lut = new Uint8ClampedArray(256);
+        let cdf = 0;
+        for(let i = 0; i < 256; i++){ cdf += hist[i]; lut[i] = Math.round((cdf/n)*255); }
+        row.push(lut);
+      }
+      luts.push(row);
+    }
+
+    const out = new Uint8ClampedArray(data.length);
+    for(let y = 0; y < h; y++){
+      let ty = (y - tileH/2)/tileH, ty0 = Math.floor(ty), ty1 = ty0+1, fy = ty-ty0;
+      ty0 = Math.max(0, Math.min(tilesY-1, ty0)); ty1 = Math.max(0, Math.min(tilesY-1, ty1));
+      for(let x = 0; x < w; x++){
+        let tx = (x - tileW/2)/tileW, tx0 = Math.floor(tx), tx1 = tx0+1, fx = tx-tx0;
+        tx0 = Math.max(0, Math.min(tilesX-1, tx0)); tx1 = Math.max(0, Math.min(tilesX-1, tx1));
+        const v = gray[y*w+x];
+        const top = luts[ty0][tx0][v]*(1-fx) + luts[ty0][tx1][v]*fx;
+        const bot = luts[ty1][tx0][v]*(1-fx) + luts[ty1][tx1][v]*fx;
+        const val = top*(1-fy) + bot*fy;
+        const p = (y*w+x)*4;
+        out[p] = out[p+1] = out[p+2] = val;
+        out[p+3] = 255;
+      }
+    }
+    ctx.putImageData(new ImageData(out, w, h), 0, 0);
+  }
+
+  // Wide-but-short regions matching a 1D barcode's own proportions — unlike the square
+  // tiles above, these never cut through a wide barcode's width, only its (much more
+  // forgiving) height. This is what actually rescues "whole card photographed from a
+  // normal distance" once the barcode print itself is also low-contrast.
+  function computeWideGrid(w, h, tileWFrac, tileHFrac, stepHFrac){
+    const tw = w*tileWFrac, th = h*tileHFrac;
+    const xs = [0, w-tw];
+    const ys = []; for(let y = 0; y <= h-th+1e-6; y += h*stepHFrac) ys.push(y);
+    if(ys[ys.length-1] < h-th-1) ys.push(h-th);
+    const tiles = [];
+    for(const sy of ys) for(const sx of xs){
+      const cx = sx+tw/2, cy = sy+th/2;
+      tiles.push({ sx, sy, sw: tw, sh: th, d: Math.hypot(cx-w/2, cy-h/2) });
+    }
+    tiles.sort((a, b) => a.d - b.d);
+    return tiles;
+  }
+
   const yieldToUI = () => new Promise(r => setTimeout(r, 0));
 
   async function multiPassDecode(img){
@@ -3099,6 +3179,28 @@ var qrcode = function() {
     const tiles = computeTiles(img.width, img.height, 3, 3, 0.15);
     for(const t of tiles){
       try{ return decodeRegion(img, t, 1400, true); }catch(e){}
+      await yieldToUI();
+    }
+    await yieldToUI();
+    setScanStatus('辨識中…（最終加強掃描）');
+
+    // Pass 4 — wide-short regions (matching a barcode's own proportions, so a wide
+    // barcode never gets cut through) plus CLAHE local-contrast enhancement. This is
+    // specifically for faded, low-ink, or low-contrast prints that passes 1–3 can't
+    // separate from the background even at full resolution.
+    const wideTiles = computeWideGrid(img.width, img.height, 0.68, 0.24, 0.18);
+    for(const t of wideTiles){
+      try{ return decodeRegion(img, t, 1400, true); }catch(e){}
+      await yieldToUI();
+      const canvas = $('scanCanvas'); // decodeRegion just drew this exact region into it
+      try{
+        claheEnhance(canvas, 8, 8, 3.0);
+        const reader = getReader();
+        const hints = new Map();
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+        reader.setHints(hints);
+        return reader.decodeFromCanvas(canvas);
+      }catch(e){}
       await yieldToUI();
     }
     return null;
