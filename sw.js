@@ -1,4 +1,4 @@
-const CACHE_NAME = 'card-wallet-v7';
+const CACHE_NAME = 'card-wallet-v8';
 const ASSETS = [
   './',
   './index.html',
@@ -6,7 +6,6 @@ const ASSETS = [
   './icon-192.png',
   './icon-512.png',
   './icon-maskable-512.png',
-  './codegen-bundle.js',
   './zxing-bundle.js'
 ];
 
