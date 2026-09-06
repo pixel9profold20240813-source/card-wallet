@@ -1,11 +1,12 @@
-const CACHE_NAME = 'card-wallet-v4';
+const CACHE_NAME = 'card-wallet-v5';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
-  './icon-maskable-512.png'
+  './icon-maskable-512.png',
+  './zxing-bundle.js'
 ];
 
 self.addEventListener('install', (event) => {
