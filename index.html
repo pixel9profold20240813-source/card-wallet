@@ -3350,8 +3350,7 @@ var qrcode = function() {
   // (used for photos) makes each attempt try multiple algorithms/rotations, which is
   // the right tradeoff for one hard photo but the wrong one for 30 frames/sec of
   // video — it was the main reason live scanning felt sluggish. No hints here means
-  // the library's fast default path; a moderate video resolution (rather than
-  // whatever the camera's max default is) keeps each frame's decode attempt cheap.
+  // the library's fast default path.
   let liveReader = null;
   function getLiveReader(){
     if(!liveReader) liveReader = new ZXingBrowser.BrowserMultiFormatReader(null, 0);
@@ -3369,34 +3368,15 @@ var qrcode = function() {
       return;
     }
 
-    const reader = getLiveReader();
-
+    let stream;
     try{
-      liveScanControls = await reader.decodeFromConstraints(
-        { video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-        } },
-        $('liveScanVideo'),
-        (result, err, controls) => {
-          if(result){
-            const text = result.getText();
-            const isQr = result.getBarcodeFormat() === ZXing.BarcodeFormat.QR_CODE;
-            $('fCode').value = text;
-            pendingFmt = isQr ? 'qr' : 'barcode';
-            setFmt(pendingFmt);
-            setScanStatus('已辨識：' + text, 'ok');
-            toast('已自動填入卡號');
-            controls.stop();
-            liveScanControls = null;
-            closeLiveScan();
-          }
-          // NotFoundException fires continuously between frames while still searching —
-          // that's normal, not an error to surface.
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
-      );
-      $('liveScanStatus').textContent = '掃描中…';
+      });
     }catch(e){
       if(e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError')){
         $('liveScanStatus').textContent = '未取得相機權限，請改用「上傳截圖」';
@@ -3405,7 +3385,67 @@ var qrcode = function() {
       }else{
         $('liveScanStatus').textContent = '相機啟動失敗，請改用「上傳截圖」';
       }
+      return;
     }
+
+    const video = $('liveScanVideo');
+    video.srcObject = stream;
+    try{ await video.play(); }catch(e){}
+
+    // Our own capture loop (instead of ZXing's built-in continuous decode), cropped to
+    // roughly the on-screen guide frame's region: smaller crop = faster per attempt,
+    // and (as we found while fixing photo scanning) CLAHE separates a faded barcode's
+    // contrast far better on a tight crop than on a whole wide frame. Each attempt
+    // tries a fast plain decode first (catches clear codes almost free), and only
+    // falls back to CLAHE — the same technique that rescued faded/low-contrast card
+    // prints in the photo pipeline — when the plain attempt fails.
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const reader = getLiveReader();
+    let stopped = false;
+    let lastAttempt = 0;
+    const MIN_INTERVAL = 60;
+
+    function handleResult(result){
+      const text = result.getText();
+      const isQr = result.getBarcodeFormat() === ZXing.BarcodeFormat.QR_CODE;
+      $('fCode').value = text;
+      pendingFmt = isQr ? 'qr' : 'barcode';
+      setFmt(pendingFmt);
+      setScanStatus('已辨識：' + text, 'ok');
+      toast('已自動填入卡號');
+      closeLiveScan();
+    }
+
+    function loop(ts){
+      if(stopped) return;
+      if(!lastAttempt || ts - lastAttempt >= MIN_INTERVAL){
+        lastAttempt = ts;
+        if(video.readyState >= 2 && video.videoWidth){
+          const vw = video.videoWidth, vh = video.videoHeight;
+          const cropW = vw * 0.75, cropH = vh * 0.47;
+          const cropX = (vw - cropW) / 2, cropY = (vh - cropH) / 2;
+          canvas.width = cropW; canvas.height = cropH;
+          ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+          try{
+            handleResult(reader.decodeFromCanvas(canvas));
+            return;
+          }catch(e){ /* not found plainly — try a contrast-enhanced pass below */ }
+
+          try{
+            claheEnhance(canvas, 8, 6, 3.0);
+            handleResult(reader.decodeFromCanvas(canvas));
+            return;
+          }catch(e){ /* nothing found in this frame yet — keep going */ }
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+
+    liveScanControls = { stop(){ stopped = true; stream.getTracks().forEach(t => t.stop()); } };
+    $('liveScanStatus').textContent = '掃描中…';
+    requestAnimationFrame(loop);
   }
 
   $('scanLiveBtn').addEventListener('click', openLiveScan);
