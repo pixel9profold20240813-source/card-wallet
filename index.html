@@ -3345,6 +3345,19 @@ var qrcode = function() {
     $('liveScanOverlay').classList.remove('show');
   }
 
+  // Separate reader instance from the photo-decode pipeline's getReader(): live
+  // scanning wants many FAST attempts per second, not few thorough ones. TRY_HARDER
+  // (used for photos) makes each attempt try multiple algorithms/rotations, which is
+  // the right tradeoff for one hard photo but the wrong one for 30 frames/sec of
+  // video — it was the main reason live scanning felt sluggish. No hints here means
+  // the library's fast default path; a moderate video resolution (rather than
+  // whatever the camera's max default is) keeps each frame's decode attempt cheap.
+  let liveReader = null;
+  function getLiveReader(){
+    if(!liveReader) liveReader = new ZXingBrowser.BrowserMultiFormatReader(null, 0);
+    return liveReader;
+  }
+
   async function openLiveScan(){
     $('liveScanOverlay').classList.add('show');
     $('liveScanStatus').textContent = '正在啟動相機…';
@@ -3356,14 +3369,15 @@ var qrcode = function() {
       return;
     }
 
-    const reader = getReader();
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    reader.setHints(hints);
+    const reader = getLiveReader();
 
     try{
       liveScanControls = await reader.decodeFromConstraints(
-        { video: { facingMode: { ideal: 'environment' } } },
+        { video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+        } },
         $('liveScanVideo'),
         (result, err, controls) => {
           if(result){
